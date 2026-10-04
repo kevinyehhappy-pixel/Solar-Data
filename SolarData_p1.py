@@ -192,17 +192,37 @@ class SolarDataIngestor:
         plt.show()
 
 
-# ==========================================
-# 執行範例
-# ==========================================
+
 if __name__ == "__main__":
+    # ----------------------------------------------------
+    # 階段 A：執行模組一（讀取本地快取或連網下載）
+    # ----------------------------------------------------
     ingestor = SolarDataIngestor(download_dir="./solar_data")
 
-    # 1. 直接指定你剛才已成功下載的 SJI 檔案路徑
-    local_sji_file = "./solar_data/iris_l2_20220330_161411_3660259102_SJI_2796_t000.fits.gz"
+    # 1. 檢索/載入資料 (優先讀取本地已下載的 SJI 檔案)
+    ingestor.search_and_download_iris(
+        start_time="2022-03-30T17:00:00",
+        end_time="2022-03-30T17:10:00",
+        passband="2796",
+    )
 
-    ingestor.load_local_fits(local_sji_file)
+    # 2. 解析 FITS 結構並讀取 3D 數據陣列
+    header, raw_cube = ingestor.inspect_and_read_fits()
 
-    # 2. 讀取 FITS 資訊並渲染
-    header, data = ingestor.inspect_and_read_fits()
-    ingestor.display_preview(frame_idx=0)
+    # ----------------------------------------------------
+    # 階段 B：連動模組二（動態匯入並執行天文定標與裁切）
+    # ----------------------------------------------------
+    from SolarData_p2 import AstrometryCalibrator
+
+    # 3. 初始化定標器
+    calibrator = AstrometryCalibrator(data_cube=raw_cube, header=header)
+
+    # 4. 設定感興趣區域 (ROI) 裁切範圍
+    # 方式一：使用像素坐標裁切 (ymin, ymax, xmin, xmax)
+    roi_data = calibrator.calibrate_and_crop(pixel_bounds=(100, 300, 80, 280))
+
+    # 方式二：若想改用「日心角秒」裁切，可解除下行註解並註解上方方式一
+    # roi_data = calibrator.calibrate_and_crop(arcsec_bounds=(450.0, 550.0, 280.0, 380.0))
+
+    # 5. 顯示經過 WCS 坐標定標、標有「日面法線基準」的科學預覽圖
+    calibrator.display_roi_preview(roi_data, frame_idx=0)
