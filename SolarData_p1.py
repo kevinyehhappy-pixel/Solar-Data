@@ -194,35 +194,106 @@ class SolarDataIngestor:
 
 
 if __name__ == "__main__":
-    # ----------------------------------------------------
-    # 階段 A：執行模組一（讀取本地快取或連網下載）
-    # ----------------------------------------------------
-    ingestor = SolarDataIngestor(download_dir="./solar_data")
-
-    # 1. 檢索/載入資料 (優先讀取本地已下載的 SJI 檔案)
-    ingestor.search_and_download_iris(
-        start_time="2022-03-30T17:00:00",
-        end_time="2022-03-30T17:10:00",
-        passband="2796",
+    print(
+        "======================================================================"
+    )
+    print(" 太陽針狀體動態觀測分析管線 (IRIS SJI 2796 Å Pipeline) 啟動")
+    print(
+        "======================================================================"
     )
 
-    # 2. 解析 FITS 結構並讀取 3D 數據陣列
+    # ----------------------------------------------------
+    # [模組一] 數據檢索與 FITS 讀取
+    # ----------------------------------------------------
+    ingestor = SolarDataIngestor(download_dir="./solar_data")
+    local_sji_file = "./solar_data/iris_l2_20220330_161411_3660259102_SJI_2796_t000.fits.gz"
+
+    if os.path.exists(local_sji_file):
+        ingestor.load_local_fits(local_sji_file)
+    else:
+        ingestor.search_and_download_iris(
+            start_time="2022-03-30T17:00:00",
+            end_time="2022-03-30T17:10:00",
+            passband="2796",
+        )
+
     header, raw_cube = ingestor.inspect_and_read_fits()
 
     # ----------------------------------------------------
-    # 階段 B：連動模組二（動態匯入並執行天文定標與裁切）
+    # [模組二] 天文物理定標與 ROI 裁切
     # ----------------------------------------------------
     from SolarData_p2 import AstrometryCalibrator
 
-    # 3. 初始化定標器
     calibrator = AstrometryCalibrator(data_cube=raw_cube, header=header)
-
-    # 4. 設定感興趣區域 (ROI) 裁切範圍
-    # 方式一：使用像素坐標裁切 (ymin, ymax, xmin, xmax)
+    # 裁切 200x200 像素之目標區域
     roi_data = calibrator.calibrate_and_crop(pixel_bounds=(100, 300, 80, 280))
 
-    # 方式二：若想改用「日心角秒」裁切，可解除下行註解並註解上方方式一
-    # roi_data = calibrator.calibrate_and_crop(arcsec_bounds=(450.0, 550.0, 280.0, 380.0))
+    # ----------------------------------------------------
+    # [模組三] 針狀體幾何標定、時空切片與運動學擬合
+    # ----------------------------------------------------
+    from SolarData_p3 import SpiculeAnalysisEngine
 
-    # 5. 顯示經過 WCS 坐標定標、標有「日面法線基準」的科學預覽圖
-    calibrator.display_roi_preview(roi_data, frame_idx=0)
+    engine = SpiculeAnalysisEngine(roi=roi_data)
+
+    # 模擬採樣一組針狀體簇 (足點 -> 尖端像素坐標)
+    test_spicules = [
+        (1, (45, 50), (60, 95)),
+        (2, (80, 70), (105, 120)),
+        (3, (120, 110), (145, 150)),
+        (4, (70, 140), (85, 175)),
+        (5, (130, 40), (160, 80)),
+    ]
+
+    print(
+        f"\n[階段 3/4] 開始批量分析 {len(test_spicules)} 條針狀體特徵與視速度..."
+    )
+    for sp_id, p_start, p_end in test_spicules:
+        engine.analyze_single_spicule(
+            spicule_id=sp_id,
+            p_start=p_start,
+            p_end=p_end,
+            fit_velocity=True,
+            t_start_idx=0,
+            t_end_idx=15,
+        )
+
+    # 輸出單體診斷圖 (以第 1 條為例)
+    engine.display_spicule_diagnostics(
+        engine.measurements[0], save_path="./solar_data/spicule_diagnostic.png"
+    )
+
+    # ----------------------------------------------------
+    # [模組四] 結構化導出、極坐標風花圖與向量圖譜
+    # ----------------------------------------------------
+    from SolarData_p4 import SolarDataExporter
+
+    exporter = SolarDataExporter(
+        roi=roi_data, measurements=engine.measurements
+    )
+
+    # 導出標準表格與二進位陣列
+    csv_path = exporter.export_to_csv("spicule_catalog.csv")
+    npy_path = exporter.export_to_numpy("spicule_catalog.npy")
+
+    # 繪製群體指向風花圖 (Polar Wind-Rose)
+    exporter.plot_wind_rose(
+        num_bins=16, save_name="wind_rose_spicules.png", show=False
+    )
+
+    # 繪製全視場疊加向量圖譜
+    exporter.plot_overlay_catalog(
+        frame_idx=0, save_name="spicules_overlay.png", show=False
+    )
+
+    print(
+        "\n======================================================================"
+    )
+    print(" 全分析流程執行完成！產出檔案清單：")
+    print(f"  1. 幾何定標預覽圖 : ./solar_data/roi_preview.png")
+    print(f"  2. 單體診斷時空圖 : ./solar_data/spicule_diagnostic.png")
+    print(f"  3. 群體極坐標風花圖: ./solar_data/wind_rose_spicules.png")
+    print(f"  4. 視場向量疊加圖 : ./solar_data/spicules_overlay.png")
+    print(f"  5. 結構化特徵目錄 : {csv_path}")
+    print(
+        "======================================================================"
+    )
